@@ -639,8 +639,8 @@ const getAppSignature = async () => {
 ## 11. Deployment
 
 ### 11.1 Backend
-- Docker containers on AWS ECS
-- RDS for PostgreSQL
+- Docker containers
+- PostgreSQL
 - CloudFront for API caching
 
 ### 11.2 Mobile

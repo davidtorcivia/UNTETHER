@@ -1,0 +1,16 @@
+{"ip":"::ffff:127.0.0.1","level":"info","message":"GET /health","timestamp":"2025-06-03T21:40:19.612Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"POST /api/auth/register","timestamp":"2025-06-03T21:40:19.640Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"GET /api/scores/current","timestamp":"2025-06-03T21:40:19.646Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"GET /api/groups/search","timestamp":"2025-06-03T21:40:19.651Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"GET /nonexistent","timestamp":"2025-06-03T21:40:19.655Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"GET /health","timestamp":"2025-06-03T21:41:22.017Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"POST /api/auth/register","timestamp":"2025-06-03T21:41:22.041Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"GET /api/scores/current","timestamp":"2025-06-03T21:41:22.048Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"GET /api/groups/search","timestamp":"2025-06-03T21:41:22.053Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"GET /nonexistent","timestamp":"2025-06-03T21:41:22.057Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"GET /health","timestamp":"2025-06-03T21:41:56.465Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"POST /api/auth/register","timestamp":"2025-06-03T21:41:56.503Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"GET /api/scores/current","timestamp":"2025-06-03T21:41:56.512Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"GET /api/groups/search","timestamp":"2025-06-03T21:41:56.520Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"GET /nonexistent","timestamp":"2025-06-03T21:41:56.526Z"}
+{"code":"28P01","file":"auth.c","length":94,"level":"error","line":"285","message":"Failed to start server: password authentication failed for user \"David\"","name":"error","routine":"auth_failed","severity":"FATAL","stack":"error: password authentication failed for user \"David\"\n    at C:\\Users\\David\\Documents\\SpiderOak Hive\\disinfo\\UNTETHER\\backend\\node_modules\\pg-pool\\index.js:45:11\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async connectDatabase (C:\\Users\\David\\Documents\\SpiderOak Hive\\disinfo\\UNTETHER\\backend\\src\\database\\connection.js:25:20)\n    at async startServer (C:\\Users\\David\\Documents\\SpiderOak Hive\\disinfo\\UNTETHER\\backend\\src\\server.js:144:5)","timestamp":"2025-06-03T21:42:35.404Z"}
