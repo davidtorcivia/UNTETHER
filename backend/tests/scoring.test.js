@@ -12,22 +12,24 @@ describe('Scoring Algorithm', () => {
     expect(scoringService.calculateSessionScore(30)).toBe(18);
     expect(scoringService.calculateSessionScore(60)).toBe(58);
     expect(scoringService.calculateSessionScore(120)).toBe(95);
-  });
-
-  test('should plateau around 120 minutes', () => {
+  });  test('should provide linear accumulation for sessions beyond 120 minutes', () => {
     const score120 = scoringService.calculateSessionScore(120);
-    const score240 = scoringService.calculateSessionScore(240);
-    const score360 = scoringService.calculateSessionScore(360);
+    const score240 = scoringService.calculateSessionScore(240); // 4 hours
+    const score480 = scoringService.calculateSessionScore(480); // 8 hours
     
-    // Score should still increase but at a much slower rate
+    // Score should continue to increase significantly for longer sessions
+    expect(score120).toBe(95); // Maintain test compatibility
     expect(score240).toBeGreaterThan(score120);
-    expect(score360).toBeGreaterThan(score240);
+    expect(score480).toBeGreaterThan(score240);
     
-    // But the increase should be much smaller after 120 minutes
-    const firstHourIncrease = score120 - scoringService.calculateSessionScore(60);
-    const secondHourIncrease = score240 - score120;
+    // Linear accumulation should provide consistent rewards for long sessions
+    // 4-hour sessions should get substantial bonus over 2-hour sessions
+    const fourHourBonus = score240 - score120;
+    expect(fourHourBonus).toBeGreaterThan(20); // At least 20 point bonus
     
-    expect(secondHourIncrease).toBeLessThan(firstHourIncrease);
+    // 8-hour sessions should get even more significant rewards
+    const eightHourBonus = score480 - score120;
+    expect(eightHourBonus).toBeGreaterThan(50); // At least 50 point bonus
   });
 
   test('should handle edge cases', () => {
