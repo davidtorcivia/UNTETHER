@@ -1,5 +1,18 @@
 const Joi = require('joi');
 
+// Custom validation function for IANA timezone
+const isValidTimezone = (value, helpers) => {
+  try {
+    const supportedTimezones = Intl.supportedValuesOf('timeZone');
+    if (supportedTimezones.includes(value)) {
+      return value;
+    }
+  } catch (e) {
+    // Intl.supportedValuesOf might throw an error in older Node.js or restricted environments, though unlikely for 'timeZone'
+  }
+  return helpers.error('string.timezone');
+};
+
 // User validation schemas
 const registerSchema = Joi.object({
   username: Joi.string()
@@ -30,9 +43,10 @@ const registerSchema = Joi.object({
     }),
   
   timezone: Joi.string()
+    .custom(isValidTimezone, 'IANA timezone validation')
     .default('UTC')
     .messages({
-      'string.base': 'Timezone must be a valid string'
+      'string.timezone': 'Timezone must be a valid IANA timezone identifier (e.g., America/New_York, UTC)'
     })
 });
 
@@ -59,7 +73,9 @@ const updateProfileSchema = Joi.object({
     .optional(),
   
   timezone: Joi.string()
+    .custom(isValidTimezone, 'IANA timezone validation')
     .optional()
+    .messages({ 'string.timezone': 'Timezone must be a valid IANA timezone identifier (e.g., America/New_York, UTC)' })
 });
 
 // Group validation schemas (consolidated and updated)
