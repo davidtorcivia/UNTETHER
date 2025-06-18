@@ -46,3 +46,9 @@
 {"ip":"::ffff:127.0.0.1","level":"info","message":"GET /api/scores/current","timestamp":"2025-06-03T23:15:03.598Z"}
 {"ip":"::ffff:127.0.0.1","level":"info","message":"GET /api/groups/search","timestamp":"2025-06-03T23:15:03.603Z"}
 {"ip":"::ffff:127.0.0.1","level":"info","message":"GET /nonexistent","timestamp":"2025-06-03T23:15:03.607Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"GET /health","timestamp":"2025-06-03T23:19:59.663Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"POST /api/auth/register","timestamp":"2025-06-03T23:19:59.688Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"GET /api/scores/current","timestamp":"2025-06-03T23:19:59.695Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"GET /api/groups/search","timestamp":"2025-06-03T23:19:59.700Z"}
+{"ip":"::ffff:127.0.0.1","level":"info","message":"GET /nonexistent","timestamp":"2025-06-03T23:19:59.706Z"}
+{"code":"28P01","file":"auth.c","length":94,"level":"error","line":"285","message":"Failed to start server: password authentication failed for user \"David\"","name":"error","routine":"auth_failed","severity":"FATAL","stack":"error: password authentication failed for user \"David\"\n    at C:\\Users\\David\\Documents\\SpiderOak Hive\\disinfo\\UNTETHER\\backend\\node_modules\\pg-pool\\index.js:45:11\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async connectDatabase (C:\\Users\\David\\Documents\\SpiderOak Hive\\disinfo\\UNTETHER\\backend\\src\\database\\connection.js:25:20)\n    at async startServer (C:\\Users\\David\\Documents\\SpiderOak Hive\\disinfo\\UNTETHER\\backend\\src\\server.js:144:5)","timestamp":"2025-06-04T00:13:12.362Z"}
