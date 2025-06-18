@@ -12,6 +12,21 @@ router.post('/batch', authenticate, validate(schemas.batchEvents), asyncHandler(
   const { events, deviceCert } = req.body;
   const userId = req.userId;
 
+  if (!events || events.length === 0) {
+    throw new AppError('No events provided', 400, 'E400', 'No events in batch.');
+  }
+
+  // Ensure all events in the batch share the same device_uuid
+  const firstDeviceUUID = events[0].device_uuid;
+  if (!firstDeviceUUID) {
+    throw new AppError('Missing device_uuid in first event', 400, 'E400', 'Device UUID missing in event data.');
+  }
+  for (let i = 1; i < events.length; i++) {
+    if (events[i].device_uuid !== firstDeviceUUID) {
+      throw new AppError('All events in a batch must share the same device_uuid', 400, 'E400', 'Mismatched device_uuid in batch.');
+    }
+  }
+
   // Validate event timestamps
   const now = Date.now();
   for (const event of events) {
@@ -19,21 +34,14 @@ router.post('/batch', authenticate, validate(schemas.batchEvents), asyncHandler(
     
     // Events can't be more than 7 days old
     const eventAge = now - eventTime;
-    if (eventAge > 7 * 24 * 60 * 60 * 1000) {
-      throw new AppError('Events too old', 400, 'E400');
+    if (eventAge > 7 * 24 * 60 * 60 * 1000) { // 7 days
+      throw new AppError('Events too old', 400, 'E400', `Event timestamp ${event.timestamp} is too old.`);
     }
     
     // Events can't be in the future (allow 5 minute tolerance for clock skew)
     if (eventTime > now + (5 * 60 * 1000)) {
-      throw new AppError('Future events not allowed', 400, 'E400');
+      throw new AppError('Future events not allowed', 400, 'E400', `Event timestamp ${event.timestamp} is in the future.`);
     }
-  }
-
-  // Device certificate verification (placeholder for now)
-  if (deviceCert) {
-    // In production, verify the device certificate here
-    // For now, we'll just log it
-    console.log('Device certificate received:', deviceCert.substring(0, 20) + '...');
   }
 
   // Check for anomalies
@@ -47,12 +55,13 @@ router.post('/batch', authenticate, validate(schemas.batchEvents), asyncHandler(
 
   try {
     // Process events and calculate scores
-    const result = await processEvents(events, userId);
+    const result = await processEvents(events, userId, firstDeviceUUID, deviceCert);
 
     res.json({
       message: 'Events processed successfully',
       sessionsProcessed: result.sessionsProcessed,
       totalScore: result.totalScore,
+      deviceVerified: result.isDeviceVerified,
       anomalies: anomalyCheck.flags.length > 0 ? anomalyCheck.flags : undefined
     });
 
@@ -98,9 +107,9 @@ router.get('/sync-status', authenticate, asyncHandler(async (req, res) => {
 }));
 
 // Get recent events (for debugging purposes - admin only in production)
-router.get('/recent', authenticate, asyncHandler(async (req, res) => {
+router.get('/recent', authenticate, validate(schemas.eventLimitQuery, 'query'), asyncHandler(async (req, res) => {
   const userId = req.userId;
-  const limit = Math.min(parseInt(req.query.limit) || 50, 100);
+  const { limit } = req.query; // limit is validated and has a default from eventLimitQuerySchema
 
   const result = await query(
     `SELECT event_type, timestamp, device_uuid, processed, created_at

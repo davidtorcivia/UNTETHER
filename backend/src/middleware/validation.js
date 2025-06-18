@@ -62,6 +62,17 @@ const updateProfileSchema = Joi.object({
     .optional()
 });
 
+// Group validation schemas (consolidated and updated)
+// createGroupSchema is defined below, this is a good place for updateGroupSchema
+const updateGroupSchema = Joi.object({
+  name: Joi.string().min(3).max(50).optional().messages({
+    'string.min': 'Group name must be at least 3 characters long',
+    'string.max': 'Group name must not exceed 50 characters'
+  }),
+  description: Joi.string().max(200).allow('').optional(),
+  type: Joi.string().valid('PUBLIC', 'PRIVATE').optional()
+});
+
 // Screen events validation
 const screenEventSchema = Joi.object({
   event_type: Joi.string()
@@ -112,15 +123,19 @@ const joinGroupSchema = Joi.object({
   inviteCode: Joi.string()
     .length(8)
     .pattern(/^[A-Z0-9]+$/)
-    .when('groupId', {
-      is: Joi.exist(),
-      then: Joi.optional(),
-      otherwise: Joi.required()
+    .optional() // Making both optional, route logic can decide if one is required
+    .messages({
+      'string.length': 'Invite code must be 8 characters long',
+      'string.pattern.base': 'Invite code must be uppercase alphanumeric'
     }),
-  
-  groupId: Joi.string()
-    .uuid()
-    .optional()
+  groupId: Joi.string().uuid().optional() // Keep as UUID
+}).or('inviteCode', 'groupId').messages({ // Ensure at least one is provided
+  'object.missing': 'Either inviteCode or groupId must be provided'
+});
+
+const manageMemberSchema = Joi.object({
+  userId: Joi.string().uuid().required(), // userId should be UUID
+  action: Joi.string().valid('remove', 'promote', 'demote').required()
 });
 
 // Search validation
@@ -183,6 +198,15 @@ const deviceRegistrationSchema = Joi.object({
     .required()
 });
 
+// Parameter & Query Schemas
+const groupIdParamSchema = Joi.object({
+  groupId: Joi.string().uuid().required()
+});
+
+const eventLimitQuerySchema = Joi.object({
+  limit: Joi.number().integer().min(1).max(100).default(50)
+});
+
 // Validation middleware factory
 function validate(schema, property = 'body') {
   return (req, res, next) => {
@@ -216,11 +240,18 @@ module.exports = {
     updateProfile: updateProfileSchema,
     screenEvent: screenEventSchema,
     batchEvents: batchEventsSchema,
+    // Group Schemas (createGroupSchema is already defined above this section in the file)
     createGroup: createGroupSchema,
+    updateGroup: updateGroupSchema,
     joinGroup: joinGroupSchema,
+    manageMember: manageMemberSchema,
+    // Search Schemas
     searchUsers: searchUsersSchema,
     searchGroups: searchGroupsSchema,
+    // Common Param/Query Schemas
     pagination: paginationSchema,
-    deviceRegistration: deviceRegistrationSchema
+    deviceRegistration: deviceRegistrationSchema,
+    groupIdParam: groupIdParamSchema,
+    eventLimitQuery: eventLimitQuerySchema
   }
 };

@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const { query } = require('../database/connection');
 const { getSession } = require('../redis/connection');
+const crypto = require('crypto');
 
 async function authenticate(req, res, next) {
   try {
@@ -110,6 +111,11 @@ function generateTokens(userId) {
   return { accessToken, refreshToken };
 }
 
+// Helper function to hash tokens
+function hashToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
 // Verify refresh token
 async function verifyRefreshToken(token) {
   try {
@@ -119,10 +125,11 @@ async function verifyRefreshToken(token) {
       throw new Error('Invalid token type');
     }
 
+    const hashedToken = hashToken(token);
     // Check if refresh token exists in database
     const tokenResult = await query(
       'SELECT user_id FROM refresh_tokens WHERE token_hash = $1 AND expires_at > NOW()',
-      [token] // In production, should hash this
+      [hashedToken]
     );
 
     if (tokenResult.rows.length === 0) {
@@ -137,18 +144,20 @@ async function verifyRefreshToken(token) {
 
 // Store refresh token in database
 async function storeRefreshToken(userId, refreshToken, deviceInfo = {}) {
+  const hashedToken = hashToken(refreshToken);
   await query(
     `INSERT INTO refresh_tokens (user_id, token_hash, device_info, expires_at)
      VALUES ($1, $2, $3, NOW() + INTERVAL '7 days')`,
-    [userId, refreshToken, JSON.stringify(deviceInfo)]
+    [userId, hashedToken, JSON.stringify(deviceInfo)]
   );
 }
 
 // Revoke refresh token
 async function revokeRefreshToken(refreshToken) {
+  const hashedToken = hashToken(refreshToken);
   await query(
     'DELETE FROM refresh_tokens WHERE token_hash = $1',
-    [refreshToken]
+    [hashedToken]
   );
 }
 

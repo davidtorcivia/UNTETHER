@@ -153,10 +153,38 @@ function extractSessions(events) {
 }
 
 // Process events and calculate scores
-async function processEvents(events, userId) {
-  if (!validateEventSequence(events)) {
+// async function processEvents(events, userId) { // OLD SIGNATURE
+async function processEvents(events, userId, deviceUUID, deviceCert) { // NEW SIGNATURE
+  const sequenceValidation = validateEventSequence(events);
+  if (!sequenceValidation.isValid) {
+    // Consider using AppError for more structured error handling client-side
     throw new Error('Invalid event sequence detected');
   }
+
+  let isDeviceVerified = false;
+  if (deviceCert && deviceUUID) {
+    const certResult = await query( // Using global query for this check
+      'SELECT certificate_hash FROM device_certificates WHERE user_id = $1 AND device_uuid = $2',
+      [userId, deviceUUID]
+    );
+    if (certResult.rows.length > 0 && certResult.rows[0].certificate_hash === deviceCert) {
+      isDeviceVerified = true;
+      // Optionally, update last_used for the certificate
+      // This is done outside the main transaction to ensure it happens even if event processing fails later,
+      // or could be part of the main transaction if preferred.
+      await query(
+        'UPDATE device_certificates SET last_used = NOW() WHERE user_id = $1 AND device_uuid = $2',
+        [userId, deviceUUID]
+      ).catch(err => console.error('Failed to update device certificate last_used:', err)); // Log error but don't fail processing
+    } else {
+      throw new Error('Invalid device certificate'); // Or specific AppError
+    }
+  } else if (deviceCert && !deviceUUID) {
+    throw new Error('Device UUID missing for certificate validation');
+  }
+  // If no deviceCert is provided, isDeviceVerified remains false.
+  // Current logic: events are processed, score calculated regardless of isDeviceVerified.
+  // To enforce verification: if (!isDeviceVerified && MANDATORY_POLICY) throw new Error('Device not verified');
 
   const client = await getClient();
   
@@ -168,7 +196,7 @@ async function processEvents(events, userId) {
       await client.query(
         `INSERT INTO screen_events (user_id, device_uuid, event_type, timestamp)
          VALUES ($1, $2, $3, $4)`,
-        [userId, event.device_uuid, event.event_type, event.timestamp]
+        [userId, deviceUUID, event.event_type, event.timestamp] // Use the batch's validated deviceUUID
       );
     }
 
@@ -220,10 +248,49 @@ async function processEvents(events, userId) {
 
     await client.query('COMMIT');
 
+    // Example: If scoring should be 0 for unverified devices (strict policy)
+    // if (!isDeviceVerified && events.length > 0) {
+    //   totalScore = 0;
+    //   console.warn(`Events from user ${userId} device ${deviceUUID} processed with 0 score due to unverified device certificate.`);
+    // } else {
+    for (const session of sessions) {
+      totalScore += session.score;
+    }
+    // } // End of example policy block
+
+    if (totalScore > 0 || !isDeviceVerified) { // Ensure record even if score is 0 but device is verified, or if score > 0
+      // Get current week boundaries
+      const weekBoundaries = getWeekBoundaries(userTimezone);
+
+      // Update weekly score
+      await client.query(
+        `INSERT INTO weekly_scores (user_id, week_start, total_score, last_updated)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (user_id, week_start)
+         DO UPDATE SET
+           total_score = weekly_scores.total_score + EXCLUDED.total_score,
+           last_updated = NOW()`,
+        [userId, weekBoundaries.start, totalScore]
+      );
+    }
+
+    // Mark events as processed
+    for (const event of events) {
+      await client.query(
+        `UPDATE screen_events
+         SET processed = true
+         WHERE user_id = $1 AND timestamp = $2 AND event_type = $3 AND device_uuid = $4`, // include device_uuid for precision
+        [userId, event.timestamp, event.event_type, deviceUUID]
+      );
+    }
+
+    await client.query('COMMIT');
+
     return {
       sessionsProcessed: sessions.length,
       totalScore: totalScore,
-      sessions: sessions
+      sessions: sessions,
+      isDeviceVerified: isDeviceVerified // Return verification status
     };
 
   } catch (error) {

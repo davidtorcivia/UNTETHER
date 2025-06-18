@@ -79,10 +79,24 @@ const limiter = rateLimit({
   legacyHeaders: false,
 });
 
-app.use(limiter);
+// Apply general rate limiting to all requests
+app.use('/api/', limiter); // Apply to all /api/ routes
+
+// Stricter rate limiting for authentication routes
+const authLimiter = rateLimit({
+  windowMs: parseInt(process.env.AUTH_RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
+  max: parseInt(process.env.AUTH_RATE_LIMIT_MAX_REQUESTS) || 20, // Lower max requests for auth
+  message: {
+    error: 'Too many authentication attempts from this IP, please try again later.',
+    code: 'E001'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // Compression middleware
 app.use(compression());
+
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
@@ -108,7 +122,7 @@ app.get('/health', (req, res) => {
 });
 
 // API routes
-app.use('/api/auth', authRoutes);
+app.use('/api/auth', authLimiter, authRoutes); // Apply stricter rate limit to auth routes
 app.use('/api/users', usersRoutes);
 app.use('/api/events', eventsRoutes);
 app.use('/api/scores', scoresRoutes);

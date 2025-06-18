@@ -1,37 +1,15 @@
 const express = require('express');
 const { db } = require('../database/connection');
 const { authenticate } = require('../middleware/auth');
-const { validate } = require('../middleware/validation');
-const Joi = require('joi');
+const { validate, schemas } = require('../middleware/validation'); // Updated import
+const { AppError } = require('../middleware/errorHandler'); // For throwing errors
 
 const router = express.Router();
 
-// Validation schemas
-const createGroupSchema = Joi.object({
-  name: Joi.string().min(3).max(50).required(),
-  description: Joi.string().max(255).optional(),
-  is_private: Joi.boolean().optional().default(false)
-});
-
-const joinGroupSchema = Joi.object({
-  group_id: Joi.number().integer().positive().required()
-});
-
-const updateGroupSchema = Joi.object({
-  name: Joi.string().min(3).max(50).optional(),
-  description: Joi.string().max(255).optional(),
-  is_private: Joi.boolean().optional()
-});
-
-const manageMemberSchema = Joi.object({
-  user_id: Joi.number().integer().positive().required(),
-  action: Joi.string().valid('remove', 'promote', 'demote').required()
-});
-
 // Create a new group
-router.post('/create', authenticate, validate(createGroupSchema), async (req, res, next) => {
+router.post('/create', authenticate, validate(schemas.createGroup), async (req, res, next) => {
   try {
-    const { name, description, is_private } = req.body;
+    const { name, description, type } = req.body; // Changed from is_private to type
 
     // Check if user already owns a group (limit to 1 group per user as owner)
     const existingGroup = await db.query(
@@ -40,10 +18,7 @@ router.post('/create', authenticate, validate(createGroupSchema), async (req, re
     );
 
     if (existingGroup.rows.length > 0) {
-      return res.status(409).json({
-        error: 'You can only own one group at a time',
-        code: 'E020'
-      });
+      throw new AppError('You can only own one group at a time', 409, 'E020');
     }
 
     // Check if group name is taken
@@ -53,10 +28,7 @@ router.post('/create', authenticate, validate(createGroupSchema), async (req, re
     );
 
     if (nameExists.rows.length > 0) {
-      return res.status(409).json({
-        error: 'Group name already taken',
-        code: 'E021'
-      });
+      throw new AppError('Group name already taken', 409, 'E021');
     }
 
     const client = await db.connect();
@@ -65,11 +37,11 @@ router.post('/create', authenticate, validate(createGroupSchema), async (req, re
       await client.query('BEGIN');
 
       // Create the group
-      const groupResult = await client.query(
-        `INSERT INTO groups (name, description, owner_id, is_private, created_at)
+      const groupResult = await client.query( // Using 'type' column from DB schema
+        `INSERT INTO groups (name, description, owner_id, type, created_at)
          VALUES ($1, $2, $3, $4, NOW())
-         RETURNING id, name, description, owner_id, is_private, created_at`,
-        [name, description, req.user.id, is_private]
+         RETURNING id, name, description, owner_id, type, created_at`,
+        [name, description, req.user.id, type]
       );
 
       const group = groupResult.rows[0];
@@ -101,70 +73,64 @@ router.post('/create', authenticate, validate(createGroupSchema), async (req, re
 });
 
 // Join a group
-router.post('/join', authenticate, validate(joinGroupSchema), async (req, res, next) => {
+router.post('/join', authenticate, validate(schemas.joinGroup), async (req, res, next) => {
   try {
-    const { group_id } = req.body;
+    const { groupId, inviteCode } = req.body; // Changed from group_id, expecting UUID
 
-    // Check if group exists and is not private
-    const groupResult = await db.query(
-      'SELECT id, name, is_private FROM groups WHERE id = $1',
-      [group_id]
-    );
-
-    if (groupResult.rows.length === 0) {
-      return res.status(404).json({
-        error: 'Group not found',
-        code: 'E022'
-      });
+    if (!groupId && !inviteCode) { // Should be caught by Joi's .or()
+        throw new AppError('Either groupId or inviteCode must be provided', 400, 'E400');
     }
 
-    const group = groupResult.rows[0];
+    let groupToJoin;
 
-    if (group.is_private) {
-      return res.status(403).json({
-        error: 'Cannot join private group without invitation',
-        code: 'E023'
-      });
+    // Check if group exists and is not private
+    if (groupId) {
+        const groupResult = await db.query('SELECT id, name, type FROM groups WHERE id = $1', [groupId]);
+        if (groupResult.rows.length === 0) throw new AppError('Group not found', 404, 'E022');
+        groupToJoin = groupResult.rows[0];
+    } else { // inviteCode must be present due to Joi .or()
+        const groupResult = await db.query('SELECT id, name, type FROM groups WHERE invite_code = $1', [inviteCode]);
+        if (groupResult.rows.length === 0) throw new AppError('Invalid invite code or group not found', 404, 'E022');
+        groupToJoin = groupResult.rows[0];
+    }
+
+
+    if (groupToJoin.type === 'PRIVATE' && !groupId) { // Can only join private by direct ID if some other mechanism allows, otherwise needs invite
+      throw new AppError('Cannot join private group without a valid invite code or direct access', 403, 'E023');
     }
 
     // Check if user is already a member
     const existingMember = await db.query(
       'SELECT id FROM group_members WHERE group_id = $1 AND user_id = $2',
-      [group_id, req.user.id]
+      [groupToJoin.id, req.user.id]
     );
 
     if (existingMember.rows.length > 0) {
-      return res.status(409).json({
-        error: 'Already a member of this group',
-        code: 'E024'
-      });
+      throw new AppError('Already a member of this group', 409, 'E024');
     }
 
     // Check group size limit (max 50 members)
     const memberCount = await db.query(
       'SELECT COUNT(*) as count FROM group_members WHERE group_id = $1',
-      [group_id]
+      [groupToJoin.id]
     );
 
     if (parseInt(memberCount.rows[0].count) >= 50) {
-      return res.status(409).json({
-        error: 'Group is full (maximum 50 members)',
-        code: 'E025'
-      });
+      throw new AppError('Group is full (maximum 50 members)', 409, 'E025');
     }
 
     // Add user to group
     await db.query(
       `INSERT INTO group_members (group_id, user_id, role, joined_at)
        VALUES ($1, $2, 'member', NOW())`,
-      [group_id, req.user.id]
+      [groupToJoin.id, req.user.id]
     );
 
     res.json({
       message: 'Successfully joined group',
       group: {
-        id: group.id,
-        name: group.name
+        id: groupToJoin.id,
+        name: groupToJoin.name
       }
     });
 
@@ -174,21 +140,18 @@ router.post('/join', authenticate, validate(joinGroupSchema), async (req, res, n
 });
 
 // Leave a group
-router.post('/leave/:groupId', authenticate, async (req, res, next) => {
+router.post('/leave/:groupId', authenticate, validate(schemas.groupIdParam, 'params'), async (req, res, next) => {
   try {
-    const groupId = parseInt(req.params.groupId);
+    const { groupId } = req.params; // groupId is now a validated UUID string
 
     // Check if user is a member
     const memberResult = await db.query(
       'SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2',
-      [groupId, req.user.id]
+      [groupId, req.user.id] // No parseInt needed
     );
 
     if (memberResult.rows.length === 0) {
-      return res.status(404).json({
-        error: 'Not a member of this group',
-        code: 'E026'
-      });
+      throw new AppError('Not a member of this group', 404, 'E026');
     }
 
     const { role } = memberResult.rows[0];
@@ -305,9 +268,9 @@ router.get('/my-groups', authenticate, async (req, res, next) => {
 });
 
 // Search public groups
-router.get('/search', authenticate, async (req, res, next) => {
+router.get('/search', authenticate, validate(schemas.searchGroupsSchema, 'query'), async (req, res, next) => {
   try {
-    const { query } = req.query;
+    const { q, limit } = req.query; // q and limit are validated
     
     let searchQuery = `
       SELECT 
@@ -324,21 +287,22 @@ router.get('/search', authenticate, async (req, res, next) => {
       FROM groups g
       JOIN users u ON g.owner_id = u.id
       LEFT JOIN group_members gm ON g.id = gm.group_id
-      WHERE g.is_private = false
+      WHERE g.type = 'PUBLIC'
     `;
 
     const params = [req.user.id];
 
-    if (query) {
+    if (q) {
       searchQuery += ` AND (g.name ILIKE $${params.length + 1} OR g.description ILIKE $${params.length + 1})`;
-      params.push(`%${query}%`);
+      params.push(`%${q}%`);
     }
 
     searchQuery += `
       GROUP BY g.id, g.name, g.description, g.created_at, u.username
       ORDER BY member_count DESC, g.created_at DESC
-      LIMIT 20
+      LIMIT $${params.length + 1}
     `;
+    params.push(limit); // Add limit to params array
 
     const result = await db.query(searchQuery, params);
 
@@ -356,52 +320,44 @@ router.get('/search', authenticate, async (req, res, next) => {
 });
 
 // Get group leaderboard
-router.get('/:groupId/leaderboard', authenticate, async (req, res, next) => {
+router.get('/:groupId/leaderboard', authenticate, validate(schemas.groupIdParam, 'params'), async (req, res, next) => {
   try {
-    const groupId = parseInt(req.params.groupId);
+    const { groupId } = req.params; // groupId is validated UUID
 
     // Verify user is a member of the group
     const memberCheck = await db.query(
       'SELECT id FROM group_members WHERE group_id = $1 AND user_id = $2',
-      [groupId, req.user.id]
+      [groupId, req.user.id] // No parseInt
     );
 
     if (memberCheck.rows.length === 0) {
-      return res.status(403).json({
-        error: 'Access denied - not a member of this group',
-        code: 'E027'
-      });
+      throw new AppError('Access denied - not a member of this group', 403, 'E027');
     }
 
-    // Get current week info
-    const currentWeekQuery = `
-      SELECT 
-        EXTRACT(YEAR FROM date_trunc('week', CURRENT_DATE)) as year,
-        EXTRACT(WEEK FROM date_trunc('week', CURRENT_DATE)) as week
-    `;
-    
-    const weekResult = await db.query(currentWeekQuery);
-    const { year, week } = weekResult.rows[0];
+    // Get current week_start date based on user's timezone from req.user (if available) or default to UTC
+    // For simplicity, using server's current week, which aligns with how scores are generally processed by scoringService.
+    const userTimezone = req.user.timezone || 'UTC';
+    const currentWeekStart = require('luxon').DateTime.now().setZone(userTimezone).startOf('week').toISODate();
 
     // Get group leaderboard for current week
     const leaderboardQuery = `
       SELECT 
         u.id,
         u.username,
-        COALESCE(ws.score, 0) as score,
-        COALESCE(ws.total_locked_minutes, 0) as total_locked_minutes,
-        COALESCE(ws.sessions_count, 0) as sessions_count,
-        ws.updated_at,
+        COALESCE(ws.total_score, 0) as score, -- Changed ws.score to ws.total_score
+        -- COALESCE(ws.total_locked_minutes, 0) as total_locked_minutes, -- Column does not exist in weekly_scores
+        -- COALESCE(ws.sessions_count, 0) as sessions_count, -- Column does not exist
+        ws.last_updated, -- Changed from ws.updated_at
         gm.role,
-        ROW_NUMBER() OVER (ORDER BY COALESCE(ws.score, 0) DESC, COALESCE(ws.total_locked_minutes, 0) DESC) as rank
+        ROW_NUMBER() OVER (ORDER BY COALESCE(ws.total_score, 0) DESC) as rank -- Removed non-existent columns from ORDER BY
       FROM group_members gm
       JOIN users u ON gm.user_id = u.id
-      LEFT JOIN weekly_scores ws ON u.id = ws.user_id AND ws.year = $2 AND ws.week = $3
+      LEFT JOIN weekly_scores ws ON u.id = ws.user_id AND ws.week_start = $2 -- Query by week_start
       WHERE gm.group_id = $1
-      ORDER BY COALESCE(ws.score, 0) DESC, COALESCE(ws.total_locked_minutes, 0) DESC
+      ORDER BY rank ASC
     `;
 
-    const leaderboard = await db.query(leaderboardQuery, [groupId, year, week]);
+    const leaderboard = await db.query(leaderboardQuery, [groupId, currentWeekStart]);
 
     // Get group info
     const groupInfo = await db.query(
@@ -415,10 +371,7 @@ router.get('/:groupId/leaderboard', authenticate, async (req, res, next) => {
         ...row,
         rank: parseInt(row.rank)
       })),
-      week_info: {
-        year: parseInt(year),
-        week: parseInt(week)
-      }
+      week_start: currentWeekStart
     });
 
   } catch (error) {
@@ -427,22 +380,19 @@ router.get('/:groupId/leaderboard', authenticate, async (req, res, next) => {
 });
 
 // Update group (owner only)
-router.put('/:groupId', authenticate, validate(updateGroupSchema), async (req, res, next) => {
+router.put('/:groupId', authenticate, [validate(schemas.groupIdParam, 'params'), validate(schemas.updateGroup)], async (req, res, next) => {
   try {
-    const groupId = parseInt(req.params.groupId);
-    const { name, description, is_private } = req.body;
+    const { groupId } = req.params; // Validated UUID
+    const { name, description, type } = req.body; // Changed is_private to type
 
     // Verify user is the owner
     const ownerCheck = await db.query(
       'SELECT id FROM groups WHERE id = $1 AND owner_id = $2',
-      [groupId, req.user.id]
+      [groupId, req.user.id] // No parseInt
     );
 
     if (ownerCheck.rows.length === 0) {
-      return res.status(403).json({
-        error: 'Access denied - only group owner can update group',
-        code: 'E028'
-      });
+      throw new AppError('Access denied - only group owner can update group', 403, 'E028');
     }
 
     const updates = [];
@@ -457,10 +407,7 @@ router.put('/:groupId', authenticate, validate(updateGroupSchema), async (req, r
       );
 
       if (nameExists.rows.length > 0) {
-        return res.status(409).json({
-          error: 'Group name already taken',
-          code: 'E021'
-        });
+        throw new AppError('Group name already taken', 409, 'E021');
       }
 
       updates.push(`name = $${paramIndex++}`);
@@ -472,29 +419,26 @@ router.put('/:groupId', authenticate, validate(updateGroupSchema), async (req, r
       values.push(description);
     }
 
-    if (is_private !== undefined) {
-      updates.push(`is_private = $${paramIndex++}`);
-      values.push(is_private);
+    if (type !== undefined) { // Changed from is_private
+      updates.push(`type = $${paramIndex++}`); // Use 'type' column
+      values.push(type);
     }
 
     if (updates.length === 0) {
-      return res.status(400).json({
-        error: 'No valid fields to update',
-        code: 'E008'
-      });
+      throw new AppError('No valid fields to update', 400, 'E008');
     }
 
     updates.push(`updated_at = NOW()`);
     values.push(groupId);
 
-    const query = `
+    const queryText = `
       UPDATE groups 
       SET ${updates.join(', ')}
       WHERE id = $${paramIndex}
-      RETURNING id, name, description, is_private, updated_at
+      RETURNING id, name, description, type, updated_at
     `;
 
-    const result = await db.query(query, values);
+    const result = await db.query(queryText, values);
 
     res.json({
       message: 'Group updated successfully',
@@ -507,43 +451,34 @@ router.put('/:groupId', authenticate, validate(updateGroupSchema), async (req, r
 });
 
 // Manage group members (owner only)
-router.post('/:groupId/members', authenticate, validate(manageMemberSchema), async (req, res, next) => {
+router.post('/:groupId/members', authenticate, [validate(schemas.groupIdParam, 'params'), validate(schemas.manageMember)], async (req, res, next) => {
   try {
-    const groupId = parseInt(req.params.groupId);
-    const { user_id, action } = req.body;
+    const { groupId } = req.params; // Validated UUID
+    const { userId, action } = req.body; // userId is validated UUID
 
     // Verify user is the owner
     const ownerCheck = await db.query(
       'SELECT id FROM groups WHERE id = $1 AND owner_id = $2',
-      [groupId, req.user.id]
+      [groupId, req.user.id] // No parseInt
     );
 
     if (ownerCheck.rows.length === 0) {
-      return res.status(403).json({
-        error: 'Access denied - only group owner can manage members',
-        code: 'E029'
-      });
+      throw new AppError('Access denied - only group owner can manage members', 403, 'E029');
     }
 
     // Cannot manage yourself
-    if (user_id === req.user.id) {
-      return res.status(400).json({
-        error: 'Cannot manage your own membership',
-        code: 'E030'
-      });
+    if (userId === req.user.id) {
+      throw new AppError('Cannot manage your own membership', 400, 'E030');
     }
 
     // Check if target user is a member
     const memberCheck = await db.query(
       'SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2',
-      [groupId, user_id]
+      [groupId, userId] // No parseInt
     );
 
     if (memberCheck.rows.length === 0) {
-      return res.status(404).json({
-        error: 'User is not a member of this group',
-        code: 'E031'
-      });
+      throw new AppError('User is not a member of this group', 404, 'E031');
     }
 
     const currentRole = memberCheck.rows[0].role;
@@ -552,7 +487,7 @@ router.post('/:groupId/members', authenticate, validate(manageMemberSchema), asy
       case 'remove':
         await db.query(
           'DELETE FROM group_members WHERE group_id = $1 AND user_id = $2',
-          [groupId, user_id]
+          [groupId, userId]
         );
         break;
 
@@ -560,7 +495,7 @@ router.post('/:groupId/members', authenticate, validate(manageMemberSchema), asy
         if (currentRole === 'member') {
           await db.query(
             'UPDATE group_members SET role = $1 WHERE group_id = $2 AND user_id = $3',
-            ['admin', groupId, user_id]
+            ['admin', groupId, userId]
           );
         }
         break;
@@ -569,7 +504,7 @@ router.post('/:groupId/members', authenticate, validate(manageMemberSchema), asy
         if (currentRole === 'admin') {
           await db.query(
             'UPDATE group_members SET role = $1 WHERE group_id = $2 AND user_id = $3',
-            ['member', groupId, user_id]
+            ['member', groupId, userId]
           );
         }
         break;

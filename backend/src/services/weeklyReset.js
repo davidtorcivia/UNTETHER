@@ -1,5 +1,6 @@
 const { db } = require('../database/connection');
 const scoringService = require('./scoring');
+const { DateTime } = require('luxon'); // For date manipulations if needed for week_start
 
 class WeeklyResetService {
   constructor() {
@@ -24,43 +25,37 @@ class WeeklyResetService {
     try {
       await client.query('BEGIN');
 
-      // Get the week that just ended
-      const weekQuery = `
-        SELECT 
-          EXTRACT(YEAR FROM date_trunc('week', CURRENT_DATE - INTERVAL '1 week')) as year,
-          EXTRACT(WEEK FROM date_trunc('week', CURRENT_DATE - INTERVAL '1 week')) as week,
-          date_trunc('week', CURRENT_DATE - INTERVAL '1 week') as week_start,
-          date_trunc('week', CURRENT_DATE - INTERVAL '1 week') + INTERVAL '6 days' + INTERVAL '23:59:59' as week_end
-      `;
+      // Get the week_start (e.g., Monday) for the week that just ended.
+      // Luxon's week starts on Monday. PostgreSQL's date_trunc('week', ...) also defaults to Monday.
+      const processingWeekStart = DateTime.now().minus({ weeks: 1 }).startOf('week').toISODate();
+      const processingWeekEnd = DateTime.now().minus({ weeks: 1 }).endOf('week').toISODate(); // End of Sunday
 
-      const weekResult = await client.query(weekQuery);
-      const { year, week, week_start, week_end } = weekResult.rows[0];
-
-      console.log(`Processing week ${week} of year ${year} (${week_start} to ${week_end})`);
+      console.log(`Processing week starting ${processingWeekStart} (ends ${processingWeekEnd})`);
 
       // Get all users who had screen events in the past week
       const usersQuery = `
         SELECT DISTINCT user_id 
         FROM screen_events 
-        WHERE locked_at >= $1 AND locked_at <= $2
+        WHERE timestamp >= $1 AND timestamp <= $2
       `;
-
-      const usersResult = await client.query(usersQuery, [week_start, week_end]);
+      // Use week_start (inclusive) and week_end (inclusive for the full day)
+      const usersResult = await client.query(usersQuery, [processingWeekStart, DateTime.fromISO(processingWeekEnd).plus({days:1}).toISODate()]);
       console.log(`Found ${usersResult.rows.length} users with events in the past week`);
 
       let processedUsers = 0;
       let totalScore = 0;
+      let totalSessions = 0;
 
       for (const { user_id } of usersResult.rows) {
         try {
-          const userScore = await this.processUserWeeklyScore(client, user_id, year, week, week_start, week_end);
-          totalScore += userScore.score;
+          const weeklyData = await this.processUserWeeklyScore(client, user_id, processingWeekStart);
+          totalScore += weeklyData.total_score || 0;
+          totalSessions += weeklyData.sessions_count || 0;
           processedUsers++;
 
           if (processedUsers % 100 === 0) {
             console.log(`Processed ${processedUsers}/${usersResult.rows.length} users`);
           }
-
         } catch (error) {
           console.error(`Error processing user ${user_id}:`, error);
           // Continue processing other users
@@ -71,8 +66,9 @@ class WeeklyResetService {
 
       console.log(`Weekly reset completed successfully:`);
       console.log(`- Processed ${processedUsers} users`);
-      console.log(`- Total points awarded: ${totalScore}`);
-      console.log(`- Week: ${week}/${year}`);
+      console.log(`- Total score processed: ${totalScore}`);
+      console.log(`- Total sessions processed: ${totalSessions}`);
+      console.log(`- Week starting: ${processingWeekStart}`);
 
     } catch (error) {
       await client.query('ROLLBACK');
@@ -87,56 +83,57 @@ class WeeklyResetService {
   /**
    * Process weekly score for a single user
    */
-  async processUserWeeklyScore(client, userId, year, week, weekStart, weekEnd) {
+  async processUserWeeklyScore(client, userId, weekStartDate) {
     // Check if this user's week has already been processed
     const existingScore = await client.query(
-      'SELECT id, score FROM weekly_scores WHERE user_id = $1 AND year = $2 AND week = $3',
-      [userId, year, week]
+      'SELECT id, total_score FROM weekly_scores WHERE user_id = $1 AND week_start = $2',
+      [userId, weekStartDate]
     );
 
     if (existingScore.rows.length > 0) {
-      console.log(`User ${userId} week ${week}/${year} already processed, skipping`);
-      return existingScore.rows[0];
+      console.log(`User ${userId} for week ${weekStartDate} already processed, skipping. Score: ${existingScore.rows[0].total_score}`);
+      return {
+        total_score: existingScore.rows[0].total_score,
+        sessions_count: 0 // Or fetch if we stored sessions_count, init.sql doesn't have it
+      };
     }
 
-    // Get all completed screen events for this user in the week
+    const weekEndDate = DateTime.fromISO(weekStartDate).plus({ days: 6 }).endOf('day').toISO();
+
+    // Get all screen events for this user in the week (processed or not, to ensure all data is captured)
     const eventsQuery = `
       SELECT 
-        id,
-        locked_at,
-        unlocked_at,
-        duration_minutes,
-        is_valid
+        user_id,
+        device_uuid,
+        event_type,
+        timestamp
       FROM screen_events 
       WHERE user_id = $1 
-        AND locked_at >= $2 
-        AND locked_at <= $3
-        AND unlocked_at IS NOT NULL
-        AND is_valid = true
-      ORDER BY locked_at ASC
+        AND timestamp >= $2
+        AND timestamp <= $3
+      ORDER BY timestamp ASC
     `;
 
-    const eventsResult = await client.query(eventsQuery, [userId, weekStart, weekEnd]);
+    const eventsResult = await client.query(eventsQuery, [userId, weekStartDate, weekEndDate]);
     const events = eventsResult.rows;
 
-    let totalScore = 0;
-    let totalMinutes = 0;
-    let sessionsCount = events.length;
+    if (events.length === 0) {
+      return { total_score: 0, sessions_count: 0 };
+    }
 
-    // Calculate score for each session
-    for (const event of events) {
-      const sessionScore = scoringService.calculateSessionScore(event.duration_minutes);
-      totalScore += sessionScore;
-      totalMinutes += event.duration_minutes;
+    const sessions = scoringService.extractSessions(events);
+    let totalScore = 0;
+    for (const session of sessions) {
+      totalScore += session.score;
     }
 
     // Insert the weekly score
     const insertResult = await client.query(
       `INSERT INTO weekly_scores 
-       (user_id, year, week, score, total_locked_minutes, sessions_count, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, NOW())
-       RETURNING id, score`,
-      [userId, year, week, totalScore, totalMinutes, sessionsCount]
+       (user_id, week_start, total_score, last_updated)
+       VALUES ($1, $2, $3, NOW())
+       RETURNING id, total_score`,
+      [userId, weekStartDate, totalScore]
     );
 
     return insertResult.rows[0];
@@ -154,30 +151,21 @@ class WeeklyResetService {
     try {
       await client.query('BEGIN');
 
-      // Calculate cutoff date (12 weeks ago)
-      const cutoffQuery = `
-        SELECT 
-          date_trunc('week', CURRENT_DATE - INTERVAL '12 weeks') as cutoff_date,
-          EXTRACT(YEAR FROM date_trunc('week', CURRENT_DATE - INTERVAL '12 weeks')) as cutoff_year,
-          EXTRACT(WEEK FROM date_trunc('week', CURRENT_DATE - INTERVAL '12 weeks')) as cutoff_week
-      `;
+      // Calculate cutoff date (12 weeks ago from the start of the current week)
+      const cutoffDate = DateTime.now().startOf('week').minus({ weeks: 12 }).toISODate();
 
-      const cutoffResult = await client.query(cutoffQuery);
-      const { cutoff_date, cutoff_year, cutoff_week } = cutoffResult.rows[0];
-
-      console.log(`Cleaning up data older than ${cutoff_date} (week ${cutoff_week}/${cutoff_year})`);
+      console.log(`Cleaning up data older than ${cutoffDate}`);
 
       // Delete old screen events
       const eventsDeleted = await client.query(
-        'DELETE FROM screen_events WHERE locked_at < $1',
-        [cutoff_date]
+        'DELETE FROM screen_events WHERE timestamp < $1',
+        [cutoffDate]
       );
 
       // Delete old weekly scores
       const scoresDeleted = await client.query(
-        `DELETE FROM weekly_scores 
-         WHERE (year < $1) OR (year = $1 AND week < $2)`,
-        [cutoff_year, cutoff_week]
+        `DELETE FROM weekly_scores WHERE week_start < $1`,
+        [cutoffDate]
       );
 
       // Delete old refresh tokens (older than 30 days)
